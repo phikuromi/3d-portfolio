@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Prime Vandal Finisher — Voxel Diorama</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#07060d;font-family:system-ui,sans-serif}
+  #hud{position:fixed;left:16px;bottom:14px;color:#d9c48a;font-size:12px;letter-spacing:.15em;opacity:.8;pointer-events:none}
+  #hud b{color:#7fd8ff}
+</style>
+</head>
+<body>
+<div id="hud">PRIME VANDAL // FINISHER — <b id="cnt"></b> VOXELS</div>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+"three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- Сцена ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x07060d);
+scene.fog = new THREE.Fog(0x07060d, 140, 300);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 1, 600);
+camera.position.set(95, 55, 120);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 15, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+
+scene.add(new THREE.HemisphereLight(0xfff1d6, 0x2a1840, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(60, 120, 80);
+scene.add(sun);
+const rim = new THREE.PointLight(0x4fb8ff, 2500, 160);
+rim.position.set(0, 50, 0);
+scene.add(rim);
+
+// ---------- Воксельный конструктор ----------
+const C = {
+  white: 0xf2efe8, ivory: 0xd9d3c4, gold: 0xe0b44a, goldD: 0xa87a22,
+  purple: 0x7a3fd1, purpleD: 0x3d1f6e, steel: 0x3a3d48, dark: 0x15131c,
+  plat: 0x1b1826, plat2: 0x24203a, line: 0x3a2f5c
+};
+function makeSet() { return new Map(); }
+const key = (x, y, z) => x + ',' + y + ',' + z;
+function put(S, x, y, z, c) { x |= 0; y |= 0; z |= 0; S.set(key(x, y, z), [x, y, z, c]); }
+function box(S, x0, x1, y0, y1, z0, z1, c) {
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++)
+    put(S, x, y, z, typeof c === 'function' ? c(x, y, z) : c);
+}
+function ell(S, cx, cy, cz, rx, ry, rz, c) {
+  for (let x = -rx; x <= rx; x++) for (let y = -ry; y <= ry; y++) for (let z = -rz; z <= rz; z++)
+    if ((x * x) / (rx * rx) + (y * y) / (ry * ry) + (z * z) / (rz * rz) <= 1) put(S, cx + x, cy + y, cz + z, c);
+}
+function capsule(S, a, b, r0, r1, c) {
+  const d = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), n = Math.ceil(d * 1.5);
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, r = r0 + (r1 - r0) * t, rr = Math.ceil(r);
+    const px = a[0] + (b[0] - a[0]) * t, py = a[1] + (b[1] - a[1]) * t, pz = a[2] + (b[2] - a[2]) * t;
+    for (let x = -rr; x <= rr; x++) for (let y = -rr; y <= rr; y++) for (let z = -rr; z <= rr; z++)
+      if (x * x + y * y + z * z <= r * r) put(S, px + x, py + y, pz + z, c);
+  }
+}
+function shellOnly(S) { // убираем внутренние воксели: экономия без потери вида
+  const out = new Map();
+  for (const [k, v] of S) {
+    const [x, y, z] = v;
+    if (!(S.has(key(x + 1, y, z)) && S.has(key(x - 1, y, z)) && S.has(key(x, y + 1, z)) &&
+          S.has(key(x, y - 1, z)) && S.has(key(x, y, z + 1)) && S.has(key(x, y, z - 1)))) out.set(k, v);
+  }
+  return out;
+}
+const geo = new THREE.BoxGeometry(1, 1, 1);
+const m4 = new THREE.Matrix4(), col = new THREE.Color();
+function toMesh(S, mat, offset = [0, 0, 0]) {
+  const arr = [...S.values()];
+  const mesh = new THREE.InstancedMesh(geo, mat, arr.length);
+  arr.forEach((v, i) => {
+    m4.makeTranslation(v[0] + offset[0], v[1] + offset[1], v[2] + offset[2]);
+    mesh.setMatrixAt(i, m4);
+    mesh.setColorAt(i, col.setHex(v[3]));
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  return mesh;
+}
+let total = 0;
+
+// ---------- Винтовка (Prime Vandal) ----------
+const gun = makeSet(), gunGlow = makeSet();
+// ствольная коробка
+box(gun, -12, 14, -4, 5, -3, 3, (x, y, z) =>
+  (Math.abs(z) === 3 && (y === 0 || y === 1) && x > -10 && x < 12) ? C.purple :
+  (y === 5) ? C.gold : (y === -4 ? C.ivory : C.white));
+// золотые рёбра по бокам
+for (let x = -11; x <= 13; x += 4) box(gun, x, x, -3, 4, -4, -4, C.gold), box(gun, x, x, -3, 4, 4, 4, C.gold);
+// барабан-ядро (ось Z), золотое кольцо и синее свечение
+for (let x = -6; x <= 6; x++) for (let y = -6; y <= 6; y++) {
+  const r = Math.hypot(x, y);
+  for (let z = -5; z <= 5; z++) {
+    if (r <= 4.2 && Math.abs(z) <= 4) gunGlow.set(key(2 + x, 1 + y, z), [2 + x, 1 + y, z, r < 2 ? 0xe8fbff : 0x38b6ff]);
+    else if (r > 4.2 && r <= 5.8 && Math.abs(z) <= 5) put(gun, 2 + x, 1 + y, z, Math.abs(z) === 5 ? C.goldD : C.gold);
+  }
+}
+// убираем корпус, перекрывающий ядро
+for (const k of gunGlow.keys()) gun.delete(k);
+// цевьё с фиолетовыми прорезями
+box(gun, 15, 29, -2, 4, -2, 2, (x, y, z) =>
+  (Math.abs(z) === 2 && y === 1 && x % 3 !== 0) ? C.purple : (y === 4 ? C.gold : C.white));
+// ствол и дульный тормоз
+box(gun, 30, 40, 0, 2, -1, 1, C.steel);
+box(gun, 40, 44, -1, 3, -2, 2, (x) => x % 2 ? C.gold : C.goldD);
+// приклад (сужающийся)
+for (let x = -34; x <= -13; x++) {
+  const t = (x + 34) / 21, top = Math.round(2 + t * 3), bot = Math.round(-7 + t * 3);
+  box(gun, x, x, bot, top, -2, 2, (xx, y, z) => (y === top || x === -34) ? C.gold :
+    (Math.abs(z) === 2 && y === bot + 2) ? C.purple : C.white);
+}
+// магазин: изогнутый, бело-золотой
+for (let y = -5; y >= -18; y--) {
+  const off = Math.round((y + 5) * -0.45);
+  box(gun, 5 + off, 10 + off, y, y, -2, 2, y % 4 === 0 ? C.gold : C.ivory);
+}
+// рукоять
+for (let y = -5; y >= -14; y--) {
+  const off = Math.round((y + 5) * 0.35);
+  box(gun, -9 + off, -5 + off, y, y, -2, 2, C.purpleD);
+}
+box(gun, -4, 2, -6, -5, -1, 1, C.gold); // спусковая скоба
+// прицел и линзы
+box(gun, -6, 9, 6, 9, -2, 2, (x, y) => y === 9 ? C.gold : C.steel);
+box(gunGlow, 10, 10, 7, 8, -1, 1, 0x7fd8ff);
+box(gunGlow, -7, -7, 7, 8, -1, 1, 0x7fd8ff);
+// энергетические жилы вдоль корпуса
+box(gunGlow, -11, -2, 3, 3, -4, -4, 0x38b6ff); box(gunGlow, -11, -2, 3, 3, 4, 4, 0x38b6ff);
+box(gunGlow, 16, 28, 3, 3, -3, -3, 0x38b6ff); box(gunGlow, 16, 28, 3, 3, 3, 3, 0x38b6ff);
+
+const gunGroup = new THREE.Group();
+const gunMesh = toMesh(gun, new THREE.MeshLambertMaterial());
+const gunGlowMesh = toMesh(gunGlow, new THREE.MeshBasicMaterial({ toneMapped: false }));
+gunGroup.add(gunMesh, gunGlowMesh);
+gunGroup.position.y = 15;
+scene.add(gunGroup);
+total += gun.size + gunGlow.size;
+
+// ---------- Голографический волк ----------
+const wolf = makeSet(), W = 0x3fb4ff, W2 = 0x9be6ff;
+ell(wolf, 0, 0, 0, 14, 6, 5, W);           // туловище
+ell(wolf, 11, 2, 0, 8, 7, 5, W);           // грудь
+ell(wolf, 21, 7, 0, 5, 4, 4, W2);          // голова
+capsule(wolf, [24, 6, 0], [31, 4, 0], 2.6, 1.6, W2); // морда
+capsule(wolf, [19, 10, -2], [18, 15, -2], 1.6, 0.6, W2); // уши
+capsule(wolf, [19, 10, 2], [18, 15, 2], 1.6, 0.6, W2);
+capsule(wolf, [13, -3, -3], [27, -9, -3], 2.2, 1.3, W); // передние лапы в прыжке
+capsule(wolf, [13, -3, 3], [25, -11, 3], 2.2, 1.3, W);
+capsule(wolf, [-10, -2, -3], [-24, -6, -3], 2.8, 1.3, W); // задние лапы вытянуты
+capsule(wolf, [-10, -2, 3], [-22, -9, 3], 2.8, 1.3, W);
+capsule(wolf, [-14, 2, 0], [-30, 9, 0], 2.4, 0.8, W2); // хвост
+const wolfShell = shellOnly(wolf);
+const wolfMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending,
+  depthWrite: false, toneMapped: false });
+const wolfMesh = toMesh(wolfShell, wolfMat);
+const wolfGroup = new THREE.Group();
+wolfGroup.add(wolfMesh);
+wolfGroup.position.set(0, 48, 0);
+wolfGroup.rotation.z = 0.12;
+scene.add(wolfGroup);
+total += wolfShell.size;
+
+// ---------- Тёмная платформа ----------
+const plat = makeSet(), R = 56;
+for (let x = -R; x <= R; x++) for (let z = -R; z <= R; z++) {
+  const r = Math.hypot(x, z);
+  if (r > R) continue;
+  const ring = Math.abs(r - 20) < 0.6 || Math.abs(r - 38) < 0.6;
+  const spoke = (Math.abs(x) < 1 || Math.abs(z) < 1 || Math.abs(Math.abs(x) - Math.abs(z)) < 1) && r > 8;
+  put(plat, x, -30, z, ring ? C.goldD : spoke ? C.line : ((x + z) & 4 ? C.plat : C.plat2));
+  put(plat, x, -31, z, C.dark);
+  if (r > R - 1.5) put(plat, x, -29, z, C.gold);
+}
+const platMesh = toMesh(plat, new THREE.MeshLambertMaterial());
+scene.add(platMesh);
+total += plat.size;
+
+// ---------- Ударная волна и осколки (единственное, что обновляется по кадрам) ----------
+const RINGS = 3, PER = 260, SH = 320;
+const waveMesh = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ color: 0xffc845, toneMapped: false }), RINGS * PER);
+const shardGeo = new THREE.OctahedronGeometry(1, 0);
+const shardMesh = new THREE.InstancedMesh(shardGeo, new THREE.MeshBasicMaterial({ toneMapped: false }), SH);
+scene.add(waveMesh, shardMesh);
+const shards = [];
+for (let i = 0; i < SH; i++) {
+  shards.push({ a: Math.random() * Math.PI * 2, ph: Math.random(), up: 8 + Math.random() * 26,
+    s: 0.6 + Math.random() * 1.6, sp: Math.random() * 6 });
+  shardMesh.setColorAt(i, col.setHex(Math.random() < 0.75 ? 0xffc845 : 0x7a3fd1));
+}
+total += RINGS * PER + SH;
+document.getElementById('cnt').textContent = total.toLocaleString('ru-RU');
+
+const dummy = new THREE.Object3D();
+function updateFX(t) {
+  let n = 0;
+  for (let k = 0; k < RINGS; k++) {
+    const p = (t * 0.35 + k / RINGS) % 1, r = 4 + p * (R - 6), s = (1 - p) * 1.4 + 0.2;
+    for (let i = 0; i < PER; i++) {
+      const a = (i / PER) * Math.PI * 2;
+      dummy.position.set(Math.cos(a) * r, -28.5 + Math.sin(a * 6 + t * 4) * 0.4, Math.sin(a) * r);
+      dummy.rotation.set(0, -a, 0);
+      dummy.scale.set(1.2, s, s);
+      dummy.updateMatrix();
+      waveMesh.setMatrixAt(n++, dummy.matrix);
+    }
+  }
+  waveMesh.instanceMatrix.needsUpdate = true;
+  for (let i = 0; i < SH; i++) {
+    const o = shards[i], p = (t * 0.35 + o.ph) % 1, r = 6 + p * (R - 4);
+    dummy.position.set(Math.cos(o.a) * r, -28 + Math.sin(p * Math.PI) * o.up, Math.sin(o.a) * r);
+    dummy.rotation.set(t * o.sp, t * o.sp * 0.7, 0);
+    const s = o.s * (1 - p * 0.8);
+    dummy.scale.set(s, s * 1.8, s);
+    dummy.updateMatrix();
+    shardMesh.setMatrixAt(i, dummy.matrix);
+  }
+  shardMesh.instanceMatrix.needsUpdate = true;
+}
+
+// ---------- Цикл ----------
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const t = clock.getElapsedTime();
+  gunGroup.position.y = 15 + Math.sin(t * 1.2) * 2;
+  gunGroup.rotation.y = Math.sin(t * 0.4) * 0.35;
+  gunGroup.rotation.z = Math.sin(t * 0.9) * 0.04;
+  wolfGroup.position.y = 48 + Math.sin(t * 1.2 + 1) * 3;
+  wolfMat.opacity = 0.45 + Math.sin(t * 3) * 0.12 + (Math.random() < 0.03 ? -0.25 : 0); // голо-мерцание
+  rim.intensity = 2200 + Math.sin(t * 3) * 600;
+  updateFX(t);
+  controls.update();
+  renderer.render(scene, camera);
+});
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
